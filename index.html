@@ -6440,15 +6440,28 @@ try { (function initPhotoBooth(){
 
   async function startCamera(){
     try {
-      stream = await navigator.mediaDevices.getUserMedia({video:{facingMode,width:{ideal:1280},height:{ideal:960}},audio:false});
-      if(video){ video.srcObject=stream; video.style.display='block'; }
-      if(canvas) canvas.style.display='none';
-      if(startBtn) startBtn.style.display='none';
-      if(snapBtn) snapBtn.style.display='flex';
-      if(switchBtn) switchBtn.style.display='flex';
+      if(stream) stream.getTracks().forEach(function(t){t.stop();});
+      stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:facingMode,width:{ideal:1280},height:{ideal:960}},audio:false});
+      if(video && video!==_noopProxy){
+        video.srcObject=stream;
+        video.style.display='block';
+        // iOS Safari requires explicit play() call
+        try { await video.play(); } catch(pe){ console.warn('video play:', pe); }
+      }
+      if(canvas && canvas!==_noopProxy) canvas.style.display='none';
+      if(startBtn && startBtn!==_noopProxy) startBtn.style.display='none';
+      if(snapBtn && snapBtn!==_noopProxy) snapBtn.style.display='flex';
+      if(switchBtn && switchBtn!==_noopProxy) switchBtn.style.display='flex';
       toast('📷 Kamera aktif! Berpose yang manis 😊');
     } catch(err){
-      toast('⚠️ Tidak bisa akses kamera. Cek izin browser.');
+      console.warn('Camera error:', err);
+      if(err && err.name === 'NotAllowedError'){
+        toast('⚠️ Izinkan akses kamera di browser terlebih dahulu.');
+      } else if(err && err.name === 'NotFoundError'){
+        toast('⚠️ Kamera tidak ditemukan di perangkat ini.');
+      } else {
+        toast('⚠️ Tidak bisa akses kamera: ' + (err && err.message ? err.message : 'unknown'));
+      }
     }
   }
 
@@ -7060,7 +7073,10 @@ try { (function initVideoSlideshow(){
     startRecordingSlide();
   });
 
-  function getW(){ return Math.min(canvas && canvas.parentElement && parentElement.offsetWidth||640, 640); }
+  function getW(){
+    var pw = canvas && canvas.parentElement ? canvas.parentElement.offsetWidth : 0;
+    return Math.min(pw || window.innerWidth || 640, 640);
+  }
 
   function drawSlide(src, trans, cb){
     if(!canvas) return;
@@ -7902,6 +7918,202 @@ try { (function upgradeBirthdayReminder(){
 })(); } catch(e){ console.warn('Reminder upgrade error:',e); }
 
 // ══════════════════════════════════════════════════════════════
+// ☁️ JSONBIN.IO — CLOUD SYNC
+// Semua data tersimpan di cloud sehingga pasangan bisa lihat
+// ══════════════════════════════════════════════════════════════
+try{(function initCloudSync(){
+
+  // ── CONFIG — isi setelah buat akun di jsonbin.io ──
+  var JSONBIN_KEY  = localStorage.getItem('bdCloudKey')  || '';  // X-Master-Key dari jsonbin.io
+  var JSONBIN_BIN  = localStorage.getItem('bdCloudBin')  || '';  // Bin ID dari jsonbin.io
+  var SYNC_ENABLED = !!(JSONBIN_KEY && JSONBIN_BIN);
+
+  // ── Keys yang disync ke cloud ──
+  var SYNC_KEYS = [
+    'bdName','bdDate','bdBirthYear','bdAnn','bdSig',
+    'bdLetter','bdPlaylist','bdMultiCountdowns','bdTheme',
+    'bdVoiceRecs','bdGuestbook','bdSlotCount'
+  ];
+
+  // ── Baca semua photo keys ──
+  function getPhotoKeys(){
+    var keys=[];
+    try{
+      var sc=parseInt(localStorage.getItem('bdSlotCount')||'6');
+      for(var i=0;i<Math.min(sc,20);i++){
+        keys.push('bdPhoto'+i,'bdCap'+i,'bdDate'+i);
+      }
+    }catch(e){}
+    return keys;
+  }
+
+  // ── Kumpulkan semua data local ──
+  function collectData(){
+    var data={_v:Date.now(),_src:'web'};
+    var allKeys=SYNC_KEYS.concat(getPhotoKeys());
+    allKeys.forEach(function(k){
+      try{
+        var v=localStorage.getItem(k);
+        if(v!==null) data[k]=v;
+      }catch(e){}
+    });
+    return data;
+  }
+
+  // ── Terapkan data dari cloud ke localStorage ──
+  function applyData(data){
+    if(!data||typeof data!=='object') return;
+    Object.keys(data).forEach(function(k){
+      if(k.startsWith('_')) return; // skip metadata
+      try{
+        if(data[k]!==null&&data[k]!==undefined){
+          localStorage.setItem(k, data[k]);
+        }
+      }catch(e){}
+    });
+    // Refresh UI setelah apply
+    try{
+      var nm=localStorage.getItem('bdName');
+      if(nm){
+        var hn=$('heroName'); if(hn&&hn!==_noopProxy) hn.textContent=nm;
+        var spN=$('spName'); if(spN&&spN!==_noopProxy) spN.value=nm;
+        var sigEl=$('sigN'); if(sigEl&&sigEl!==_noopProxy) sigEl.textContent=localStorage.getItem('bdSig')||nm.split(' ')[0];
+        var lf=document.querySelector('.ltr-from'); if(lf) lf.textContent='Untuk '+nm+' yang paling berharga,';
+      }
+      var dt=localStorage.getItem('bdDate');
+      var bdInEl=$('bdIn'); if(bdInEl&&bdInEl!==_noopProxy&&dt) bdInEl.value=dt;
+      try{runCD();}catch(e){}
+      var lt=localStorage.getItem('bdLetter');
+      var lta=$('ltrTA'); if(lta&&lta!==_noopProxy&&lt) lta.value=lt;
+    }catch(e){}
+    toast('☁️ Data berhasil dimuat dari cloud!');
+  }
+
+  // ── Upload ke JSONBin ──
+  function pushToCloud(showToast){
+    if(!SYNC_ENABLED) return;
+    var data=collectData();
+    fetch('https://api.jsonbin.io/v3/b/'+JSONBIN_BIN, {
+      method:'PUT',
+      headers:{
+        'Content-Type':'application/json',
+        'X-Master-Key':JSONBIN_KEY,
+        'X-Bin-Versioning':'false'
+      },
+      body:JSON.stringify(data)
+    }).then(function(r){ return r.json(); }).then(function(res){
+      if(showToast) toast('☁️ Data tersimpan ke cloud!');
+    }).catch(function(e){
+      if(showToast) toast('⚠️ Gagal sync ke cloud. Cek API key.');
+    });
+  }
+
+  // ── Download dari JSONBin ──
+  function pullFromCloud(){
+    if(!SYNC_ENABLED){ toast('⚠️ Cloud belum dikonfigurasi. Isi API Key & Bin ID di Settings.'); return; }
+    toast('☁️ Mengambil data dari cloud...');
+    fetch('https://api.jsonbin.io/v3/b/'+JSONBIN_BIN+'/latest', {
+      headers:{'X-Master-Key':JSONBIN_KEY}
+    }).then(function(r){ return r.json(); }).then(function(res){
+      if(res && res.record) applyData(res.record);
+      else toast('⚠️ Data cloud kosong atau belum ada.');
+    }).catch(function(e){
+      toast('⚠️ Gagal ambil data cloud. Cek koneksi & API key.');
+    });
+  }
+
+  // ── Auto-pull saat halaman dibuka ──
+  if(SYNC_ENABLED){
+    setTimeout(function(){
+      pullFromCloud();
+    }, 1500);
+  }
+
+  // ── Auto-push saat data berubah (debounced) ──
+  var pushTimer=null;
+  function schedPush(){
+    clearTimeout(pushTimer);
+    pushTimer=setTimeout(function(){ pushToCloud(false); }, 3000);
+  }
+
+  // Hook ke save button
+  var setSave=$('setSave');
+  if(setSave&&setSave!==_noopProxy){
+    var origSaveClick=setSave.onclick;
+    setSave.addEventListener('click',function(){ setTimeout(schedPush,500); });
+  }
+  // Hook ke letter textarea
+  var lta=$('ltrTA');
+  if(lta&&lta!==_noopProxy) lta.addEventListener('input',schedPush);
+
+  // ── Expose ke global ──
+  window.cloudSync={
+    push: function(){ pushToCloud(true); },
+    pull: function(){ pullFromCloud(); },
+    config: function(key, bin){
+      localStorage.setItem('bdCloudKey', key);
+      localStorage.setItem('bdCloudBin', bin);
+      JSONBIN_KEY=key; JSONBIN_BIN=bin; SYNC_ENABLED=true;
+      toast('✅ Cloud sync dikonfigurasi!');
+      setTimeout(function(){ pullFromCloud(); }, 500);
+    },
+    isEnabled: function(){ return SYNC_ENABLED; }
+  };
+
+  // ── Inject Cloud Settings ke panel Settings ──
+  setTimeout(function(){
+    var setPanel=document.getElementById('setPanel');
+    if(!setPanel) return;
+    var existing=document.getElementById('cloudSyncSection');
+    if(existing) return;
+
+    var section=document.createElement('div');
+    section.id='cloudSyncSection';
+    section.style.cssText='margin-top:18px;padding-top:16px;border-top:1px solid var(--border)';
+    section.innerHTML=
+      '<div style="font-size:.65rem;letter-spacing:.22em;text-transform:uppercase;color:var(--gold);margin-bottom:10px">☁️ Cloud Sync (JSONBin.io)</div>'+
+      '<div style="font-size:.74rem;color:var(--muted);margin-bottom:8px;line-height:1.5">Buat akun gratis di <strong style="color:var(--gold)">jsonbin.io</strong> → buat Bin baru → salin Master Key & Bin ID ke sini.</div>'+
+      '<input id="cloudKeyInp" type="text" placeholder="X-Master-Key (dari jsonbin.io)" style="width:100%;padding:9px 12px;background:var(--card);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:.78rem;font-family:inherit;margin-bottom:7px;box-sizing:border-box"/>'+
+      '<input id="cloudBinInp" type="text" placeholder="Bin ID (contoh: 64a1b2c3d4e5f)" style="width:100%;padding:9px 12px;background:var(--card);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:.78rem;font-family:inherit;margin-bottom:10px;box-sizing:border-box"/>'+
+      '<div style="display:flex;gap:8px">'+
+        '<button id="cloudSaveBtn" style="flex:1;padding:9px;border-radius:10px;background:linear-gradient(135deg,var(--gold),#c89030);border:none;color:#1a0800;font-size:.78rem;font-weight:700;font-family:inherit;cursor:pointer">💾 Simpan Config</button>'+
+        '<button id="cloudPushBtn" style="flex:1;padding:9px;border-radius:10px;background:var(--card);border:1px solid var(--border);color:var(--text);font-size:.78rem;font-family:inherit;cursor:pointer">⬆️ Upload Data</button>'+
+        '<button id="cloudPullBtn" style="flex:1;padding:9px;border-radius:10px;background:var(--card);border:1px solid var(--border);color:var(--text);font-size:.78rem;font-family:inherit;cursor:pointer">⬇️ Ambil Data</button>'+
+      '</div>'+
+      '<div id="cloudStatus" style="font-size:.72rem;margin-top:8px;text-align:center;color:var(--muted)">'+
+        (SYNC_ENABLED?'<span style="color:#6fcf97">✅ Cloud sync aktif</span>':'<span style="color:var(--muted)">⚠️ Belum dikonfigurasi</span>')+
+      '</div>';
+
+    setPanel.appendChild(section);
+
+    // Pre-fill saved values
+    var ki=document.getElementById('cloudKeyInp');
+    var bi=document.getElementById('cloudBinInp');
+    if(ki) ki.value=localStorage.getItem('bdCloudKey')||'';
+    if(bi) bi.value=localStorage.getItem('bdCloudBin')||'';
+
+    // Buttons
+    var csb=document.getElementById('cloudSaveBtn');
+    var cpush=document.getElementById('cloudPushBtn');
+    var cpull=document.getElementById('cloudPullBtn');
+
+    if(csb) csb.addEventListener('click',function(){
+      var k=(document.getElementById('cloudKeyInp')||{}).value||'';
+      var b=(document.getElementById('cloudBinInp')||{}).value||'';
+      if(!k||!b){ toast('⚠️ Isi Master Key & Bin ID dulu!'); return; }
+      window.cloudSync.config(k.trim(), b.trim());
+      var st=document.getElementById('cloudStatus');
+      if(st) st.innerHTML='<span style="color:#6fcf97">✅ Cloud sync aktif</span>';
+    });
+    if(cpush) cpush.addEventListener('click',function(){ window.cloudSync.push(); });
+    if(cpull) cpull.addEventListener('click',function(){ window.cloudSync.pull(); });
+  }, 800); // end setTimeout
+
+})(); // end initCloudSync
+}catch(e){console.warn('Cloud sync error:',e);}
+
+
+// ══════════════════════════════════════════════════════════════
 // 🌙 FEATURE: DARK / LIGHT MODE TOGGLE
 // ══════════════════════════════════════════════════════════════
 try{(function initThemeToggle(){
@@ -8247,6 +8459,7 @@ try{
   }
 }catch(e){}
 
+// end of script
 </script>
 </body>
 </html>
